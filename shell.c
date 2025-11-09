@@ -2,6 +2,7 @@
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <stdio.h>
@@ -11,39 +12,16 @@
 #include <ctype.h>
 #include <time.h>
 #include <ncurses.h>
-#include <sys/wait.h>
+#include <signal.h>
 #include "shell.h"
 
 #define MAX_JOB_COUNT 100
-
-typedef enum {
-    RUNNING,
-    STOPPED,
-    DONE
-} job_status_t;
-
-
-typedef struct {
-    pid_t pid;
-    char cmd[256];
-    job_status_t status;
-    int job_num;
-} job_t;
-
 job_t jobs[MAX_JOB_COUNT];
 int job_count = 0;
-
-
-struct linux_dirent64 {
-    ino64_t        d_ino;    // inode number
-    off64_t        d_off;    // offset to next dirent
-    unsigned short d_reclen; // length of this record
-    unsigned char  d_type;   // file type
-    char           d_name[]; // filename (null-terminated)
-};
-// Static buffer for returned strings
+volatile sig_atomic_t sigchld_flag = 0;
+//volatile sig_atomic_t sigint_flag = 0;
+//volatile sig_atomic_t sigtstp_flag = 0; 
 static char output[8192];
-
 // ----- Internal command: pwd -----=
 char *pwd(void) {
     static char buf[512];
@@ -57,7 +35,12 @@ char *pwd(void) {
 
 // ----- Internal command: ls -----
 char *ls(void) {
+    long pid;
     char cwd[512];
+    char *arguments[] = {"ls", NULL};
+    jobs->pid = fork();
+    execvp("ls", arguments);
+    setpgid(jobs->pid , jobs->pid);
     if (getcwd(cwd, sizeof(cwd)) == NULL) {
         snprintf(output, sizeof(output), "error: getcwd failed\n");
         return output;
@@ -84,6 +67,19 @@ char *ls(void) {
         strcat(output, "\n");
         bpos += d->d_reclen;
     }
+    if (job_count < MAX_JOB_COUNT) {
+            jobs[job_count].pid = (long)pid;
+            strncpy(jobs[job_count].cmd, "ls", sizeof(jobs[job_count].cmd) - 1);
+            jobs[job_count].cmd[sizeof(jobs[job_count].cmd) - 1] = '\0';
+            jobs[job_count].status = RUNNING;
+            jobs[job_count].job_num = job_count + 1;
+            printw("[%d] %d %s\n", jobs[job_count].job_num, (int)pid, jobs[job_count].cmd);
+            job_count++;
+        } else {
+            printw("error: job table full.\n");
+        }
+    jobs->status = RUNNING;
+    waitpid(pid, (int*)jobs->status, WNOHANG | WUNTRACED); // marker
 
     close(dirfd);
     return output;
@@ -128,7 +124,6 @@ void BG_process(char *ampsand_input) {
         return;
     }
 
-    // Tokenize command
     char *args[] = { ampsand_input, NULL };
 
     pid_t pid = fork();
@@ -156,4 +151,36 @@ void BG_process(char *ampsand_input) {
             printw("error: job table full.\n");
         }
     }
+}
+
+void sigchld (int signal) {
+    sigchld_flag = 1;
+}
+
+void sigint (int signal) {
+    write(STDOUT_FILENO, "Caught Ctrl+C, Terminating...", 32);
+}
+
+void sigtstp (int signal) {
+    write(STDOUT_FILENO, "...", 19);
+}
+
+void sighandler(int signal) {
+    struct sigaction sa;
+    sa.sa_handler = &sigchld;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;   // restart interrupted syscalls
+    sigaction(SIGCHLD, &sa, NULL);
+
+    // SIGINT
+    sa.sa_handler = &sigint;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGINT, &sa, NULL);
+
+    // SIGTSTP
+    sa.sa_handler = &sigtstp;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGTSTP, &sa, NULL);
 }
