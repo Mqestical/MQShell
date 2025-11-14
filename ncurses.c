@@ -2,16 +2,28 @@
 #include <string.h>
 #include <stdlib.h>
 #include <sys/wait.h>
+#include <stdbool.h>
 #include "UN.h"
 #include "shell.h"
 
+bool is_sleep;
 char result[8192];
 
 char *shell_execute(const char *input) {
     result[0] = '\0';
+    int seconds;
 
+    // Run in background if ends with &
     if (ends_with_ampersand(input)) {
         BG_process(input);
+        return "";
+    }
+
+    char *argv[32];
+    seconds = TAGS(input, argv, &is_sleep);
+
+    if (is_sleep) {
+        clock_nsleep(seconds, 0);
         return "";
     }
 
@@ -25,17 +37,13 @@ char *shell_execute(const char *input) {
         return result;
     }
 
-    if (strcmp(input, "sleep") == 0) {
-        exit(0);
-    }
-
     if (strcmp(input, "joblist") == 0) {
         print_jobs(head);
         return "";
     }
 
     if (strcmp(input, "exit") == 0) {
-        endwin(); 
+        endwin();
         exit(0);
     }
 
@@ -48,9 +56,10 @@ int main() {
 
     initscr();
     cbreak();
-    printw("                             WELCOME %s\n\n", username);
-    printw("                            MXJESTICAL SHELL\n\n");
-    printw("                        GNU GENERAL PUBLIC LICENSE 3\n\n");
+
+    printw(" WELCOME %s\n\n", username);
+    printw(" MXJESTICAL SHELL\n\n");
+    printw(" GNU GENERAL PUBLIC LICENSE 3\n\n");
 
     char input[256];
     while (1) {

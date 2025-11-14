@@ -13,7 +13,10 @@
 #include <time.h>
 #include <ncurses.h>
 #include <signal.h>
+#include <stdbool.h>
 #include "shell.h"
+
+#define MAX_TOKENS 10
 
 int job_id = 0;
 volatile sig_atomic_t sigchld_flag = 0;
@@ -54,7 +57,7 @@ char *ls(void) {
     }
 
     output[0] = '\0';
-    for (int bpos = 0; bpos < nread; ) {
+    for (int bpos = 0; bpos < nread;) {
         struct linux_dirent64 *d = (struct linux_dirent64 *)(buf + bpos);
         strcat(output, d->d_name);
         strcat(output, "\n");
@@ -66,22 +69,18 @@ char *ls(void) {
     return output;
 }
 
-
+// ----- Check if input ends with & -----
 int ends_with_ampersand(const char *input) {
     int len = strlen(input);
     if (len == 0) return 0;
 
     int i = len - 1;
-
-    // skip spaces
     while (i >= 0 && isspace((unsigned char)input[i]))
         i--;
 
     if (i < 0) return 0;
-
     return input[i] == '&';
 }
-
 
 // ----- Sleep helper -----
 void clock_nsleep(int seconds, long nanoseconds) {
@@ -90,7 +89,7 @@ void clock_nsleep(int seconds, long nanoseconds) {
     if (ret != 0) perror("clock_nanosleep");
 }
 
-// ----- Add job -----
+// ----- Job management -----
 void add_job(Job **head, const char *cmd) {
     job_id++;
     Job *new_job = malloc(sizeof(Job));
@@ -111,15 +110,16 @@ void add_job(Job **head, const char *cmd) {
     }
 }
 
-// ----- Remove finished jobs -----
 void remove_done_jobs(Job **head) {
     Job *current = *head;
     Job *prev = NULL;
 
     while (current != NULL) {
         if (current->status == DONE) {
-            if (prev == NULL) *head = current->next;
-            else prev->next = current->next;
+            if (prev == NULL)
+                *head = current->next;
+            else
+                prev->next = current->next;
 
             Job *to_free = current;
             current = current->next;
@@ -131,7 +131,6 @@ void remove_done_jobs(Job **head) {
     }
 }
 
-// ----- Print jobs -----
 void print_jobs(Job *head) {
     Job *temp = head;
     while (temp != NULL) {
@@ -143,10 +142,11 @@ void print_jobs(Job *head) {
     }
 }
 
-// ----- Handle SIGCHLD -----
+// ----- Signal handling -----
 void handle_sigchld() {
     int status;
     pid_t w;
+
     while ((w = waitpid(-1, &status, WNOHANG | WUNTRACED | WCONTINUED)) > 0) {
         Job *temp = head;
         while (temp != NULL) {
@@ -164,75 +164,6 @@ void handle_sigchld() {
     sigchld_flag = 0;
 }
 
-// ----- Background process -----
-void BG_process(const char *input) {
-    if (input == NULL || strlen(input) == 0) {
-        printw("error: empty command\n");
-        return;
-    }
-
-    // Copy input so we can modify it
-    char cmd[256];
-    strncpy(cmd, input, 255);
-    cmd[255] = '\0';
-
-    // Remove trailing &
-    int len = strlen(cmd);
-    if (len > 0 && cmd[len-1] == '&') {
-        cmd[len-1] = '\0';
-    }
-
-    // Trim spaces
-    trim_whitespace(cmd);
-
-    if (strlen(cmd) == 0) {
-        printw("error: empty command after removing &\n");
-        return;
-    }
-
-    // Add job to linked list
-    add_job(&head, cmd);
-
-    // Get the last added job
-    Job *new_job = head;
-    while (new_job->next != NULL) new_job = new_job->next;
-
-    pid_t pid = fork();
-    if (pid < 0) {
-        perror("fork");
-        return;
-    }
-
-  if (pid == 0) {
-    Job *job;
-    // child process
-    if (strcmp(cmd, "ls") == 0) {
-        printw("%s", ls());
-        fflush(stdout);
-    } else if (strcmp(cmd, "pwd") == 0) {
-        printw("%s", pwd());
-        fflush(stdout);
-    } else if (strcmp(cmd, "sleep") == 0) {
-        clock_nsleep(5, 0); // gon' change this, just a placeholder. 
-    } else if (strcmp(cmd, "joblist") == 0) {
-        print_jobs(head);
-    } else {
-        printw("command not found\n");
-    }
-    fflush(stdout);
-    _exit(0); // important to exit the child
-}else {
-        // Parent
-        new_job->pid = pid;
-        printw("[%d] %d\n", new_job->job_id, pid);
-        refresh();
-    }
-
-    return; // leave it for later (placeholder)
-
-}
-
-// ----- Signal handlers -----
 void sigchld(int signal) { sigchld_flag = 1; }
 void sigint(int signal) { write(STDOUT_FILENO, "Ctrl+C detected\n", 16); }
 void sigtstp(int signal) { write(STDOUT_FILENO, "Ctrl+Z detected\n", 16); }
@@ -256,19 +187,108 @@ void sighandler(int signal) {
     sigaction(SIGTSTP, &sa, NULL);
 }
 
-// ----- Trim leading and trailing whitespace -----
+// ----- Background process -----
+void BG_process(const char *input) {
+    if (input == NULL || strlen(input) == 0) return;
+
+    char cmd[256];
+    strncpy(cmd, input, 255);
+    cmd[255] = '\0';
+
+    int len = strlen(cmd);
+    if (len > 0 && cmd[len - 1] == '&') cmd[len - 1] = '\0';
+    trim_whitespace(cmd);
+    if (strlen(cmd) == 0) return;
+
+    add_job(&head, cmd);
+    Job *new_job = head;
+    while (new_job->next != NULL) new_job = new_job->next;
+
+    int pipefd[2];
+    if (pipe(pipefd) == -1) {
+        perror("pipe");
+        return;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        perror("fork");
+        return;
+    }
+
+    if (pid == 0) {
+        // Child process
+        close(pipefd[0]); // close read end
+        int seconds;
+        char *argv[32];
+        bool is_sleep;
+
+        seconds = TAGS(cmd, argv, &is_sleep);
+
+        char *out = NULL;
+        if (strcmp(cmd, "ls") == 0) out = ls();
+        else if (strcmp(cmd, "pwd") == 0) out = pwd();
+        else if (is_sleep) clock_nsleep(seconds, 0);
+        else if (strcmp(cmd, "joblist") == 0) _exit(0);
+        else out = "command not found\n";
+
+        if (out) write(pipefd[1], out, strlen(out));
+        close(pipefd[1]);
+        _exit(0);
+    } else {
+        // Parent process
+        new_job->pid = pid;
+        printw("[%d] %d\n", new_job->job_id, pid);
+        refresh();
+
+        // Non-blocking read from child output
+        close(pipefd[1]); // close write end
+        char buf[8192];
+        int n = read(pipefd[0], buf, sizeof(buf)-1);
+        if (n > 0) {
+            buf[n] = '\0';
+            printw("%s", buf);
+            refresh();
+        }
+        close(pipefd[0]);
+    }
+}
+
+// ----- Tokenize And Get Sleep (TAGS) -----
+int TAGS(char *input, char *argv[], bool *is_sleep) {
+    int argc = 0;
+    char *token = strtok(input, " ");
+    while (token != NULL && argc < 31) {
+        argv[argc++] = token;
+        token = strtok(NULL, " ");
+    }
+    argv[argc] = NULL;
+
+    *is_sleep = false;
+
+    if (argc == 2 && strcmp(argv[0], "sleep") == 0) {
+        char *numstr = argv[1];
+        for (int i = 0; numstr[i]; i++) {
+            if (!isdigit((unsigned char)numstr[i])) return 0;
+        }
+        *is_sleep = true;
+        return atoi(argv[1]);
+    }
+
+    return 0;
+}
+
 static void trim_whitespace(char *str) {
     char *end;
 
-    // Trim leading
-    while(isspace((unsigned char)*str)) str++;
+    // Trim leading spaces
+    while (isspace((unsigned char)*str)) str++;
 
-    if(*str == 0) return;
+    if (*str == 0) return; // all spaces
 
-    // Trim trailing
+    // Trim trailing spaces
     end = str + strlen(str) - 1;
-    while(end > str && isspace((unsigned char)*end)) end--;
+    while (end > str && isspace((unsigned char)*end)) end--;
 
-    // Write new null terminator
     *(end + 1) = '\0';
 }

@@ -40,4 +40,5 @@ void add_job(Job **head, const char *cmd);
 void remove_done_jobs(Job **head);
 void print_jobs(Job *head);
 static void trim_whitespace(char *str);
+int TAGS(char *input, char *argv[], bool *is_sleep);
 #endif
