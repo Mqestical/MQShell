@@ -203,7 +203,8 @@ void BG_process(const char *input) {
         return;
     }
 
-   if (pid == 0) {
+  if (pid == 0) {
+    Job *job;
     // child process
     if (strcmp(cmd, "ls") == 0) {
         printw("%s", ls());
@@ -211,9 +212,16 @@ void BG_process(const char *input) {
     } else if (strcmp(cmd, "pwd") == 0) {
         printw("%s", pwd());
         fflush(stdout);
-        exit(0);
+    } else if (strcmp(cmd, "sleep") == 0) {
+        clock_nsleep(5, 0); // gon' change this, just a placeholder. 
+    } else if (strcmp(cmd, "joblist") == 0) {
+        print_jobs(head);
+    } else {
+        printw("command not found\n");
     }
-} else {
+    fflush(stdout);
+    _exit(0); // important to exit the child
+}else {
         // Parent
         new_job->pid = pid;
         printw("[%d] %d\n", new_job->job_id, pid);
