@@ -190,6 +190,13 @@ if (strcmp(input, "top") == 0) {
         return "";
     }
 
+    if (strcmp(input, "clear") == 0) {
+        clear();
+        move(0,0);
+        refresh();
+        return "";
+    }
+
     if (strcmp(input, "exit") == 0) {
         endwin();
         exit(0);
@@ -198,7 +205,8 @@ if (strcmp(input, "top") == 0) {
     return "command not found\n";
 }
 
-int main() {
+
+int main(void) {
     char username[255];
     strcpy(username, getun());
 
